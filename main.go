@@ -2,24 +2,62 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/nlopes/slack"
-	"github.com/orijtech/giphy/v1"
 	"log"
 	"os"
 	"strings"
+
+	"github.com/nlopes/slack"
+	"github.com/orijtech/giphy/v1"
 )
 
-var token string
-var slackApi *slack.Client
-var giphyApi *giphy.Client
+var (
+	token    string
+	slackApi *slack.Client
+	giphyApi *giphy.Client
+)
 
 // Initializes api clients for slack and giphy
 func init() {
-	token = os.Getenv("SLACK_TOKEN")
+	var err error
+	token, ok := os.LookupEnv("SLACK_TOKEN")
+	if !ok {
+		log.Panicf("'SLACK_TOKEN' is not set")
+	}
 	slackApi = slack.New(token)
-	giphyApi, _ = giphy.NewClientFromEnvOrDefault()
+	giphyApi, err = giphy.NewClientFromEnvOrDefault()
+	if err != nil {
+		log.Panicf("Can not init giphy client: %s", err)
+	}
+}
 
+func routeMessage(msg slack.RTMEvent, rtm *slack.RTM) error {
+	fmt.Print("Event Received: %+v", msg)
+
+	switch ev := msg.Data.(type) {
+	case *slack.ConnectedEvent:
+		fmt.Println("Connection counter:", ev.ConnectionCount)
+
+	case *slack.MessageEvent:
+		fmt.Printf("Message: %v\n", ev)
+		info := rtm.GetInfo()
+		prefix := fmt.Sprintf("<@%s> ", info.User.ID)
+
+		if ev.User != info.User.ID && strings.HasPrefix(ev.Text, prefix) {
+			respond(rtm, ev, prefix)
+		}
+
+	case *slack.RTMError:
+		fmt.Printf("Error: %s\n", ev.Error())
+
+	case *slack.InvalidAuthEvent:
+		return errors.New("Invalid credentials")
+
+	default:
+		//Take no action
+	}
+	return nil
 }
 
 func main() {
@@ -27,55 +65,31 @@ func main() {
 	slackApi.SetDebug(true)
 	rtm := slackApi.NewRTM()
 	go rtm.ManageConnection()
-
-Loop:
-	for {
-		select {
-		case msg := <-rtm.IncomingEvents:
-			fmt.Print("Event Received: ")
-			switch ev := msg.Data.(type) {
-			case *slack.ConnectedEvent:
-				fmt.Println("Connection counter:", ev.ConnectionCount)
-
-			case *slack.MessageEvent:
-				fmt.Printf("Message: %v\n", ev)
-				info := rtm.GetInfo()
-				prefix := fmt.Sprintf("<@%s> ", info.User.ID)
-
-				if ev.User != info.User.ID && strings.HasPrefix(ev.Text, prefix) {
-					respond(rtm, ev, prefix)
-				}
-
-			case *slack.RTMError:
-				fmt.Printf("Error: %s\n", ev.Error())
-
-			case *slack.InvalidAuthEvent:
-				fmt.Printf("Invalid credentials")
-				break Loop
-
-			default:
-				//Take no action
-			}
-		}
+	var err error
+	for err == nil {
+		err = routeMessage(<-rtm.IncomingEvents, rtm)
 	}
+}
+
+func unifyString(text, prefix string) string {
+	text = strings.TrimPrefix(text, prefix)
+	text = strings.TrimSpace(text)
+	return strings.ToLower(text)
 }
 
 // The response message to an incoming message event
 func respond(rtm *slack.RTM, msg *slack.MessageEvent, prefix string) {
 	var response string
-	text := msg.Text
-	text = strings.TrimPrefix(text, prefix)
-	text = strings.TrimSpace(text)
-	text = strings.ToLower(text)
+	text := unifyString(msg.Text, prefix)
 
 	requestSingleGif := map[string]bool{
-		"gimme more":  true,
-		"meow": true,
+		"gimme more": true,
+		"meow":       true,
 	}
 
 	requestMultipleGifs := map[string]bool{
-		"gimme more!":  true,
-		"meow!": true,
+		"gimme more!": true,
+		"meow!":       true,
 	}
 
 	if requestSingleGif[text] {
